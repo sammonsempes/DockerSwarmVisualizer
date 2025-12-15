@@ -6,6 +6,57 @@ A real-time web visualization tool for Docker Swarm clusters. See your nodes, se
 
 A live demo is available at: https://sammonsempes.github.io/DockerSwarmVisualizer/
 
+## Generating Docker Swarm Data
+
+To generate the JSON data from your Docker Swarm cluster, run the following command:
+```bash
+jq -n \
+  --slurpfile n <(docker node ls --format '{{json .}}' | jq -s .) \
+  --slurpfile net <(docker network ls --filter scope=swarm -q | xargs -r docker network inspect) \
+  --slurpfile s <(docker service ls -q | xargs -r docker service inspect | jq -s 'flatten') \
+  --slurpfile tasks <(docker service ls -q | xargs -r -I {} docker service ps {} --format '{{json .}}' -f "desired-state=running" | jq -s .) \
+'
+{
+  nodes: $n[0] | map({
+    id: .ID,
+    hostname: .Hostname,
+    status: .Status,
+    availability: .Availability,
+    role: (.ManagerStatus // "worker")
+  }),
+  networks: $net[0] | map({
+    id: .Name,
+    name: .Name,
+    driver: .Driver,
+    scope: .Scope,
+    created: .Created,
+    ipam: .IPAM
+  }),
+  services: $s[0] | map({
+    id: .Spec.Name,
+    name: .Spec.Name,
+    mode: (.Spec.Mode | keys[0]),
+    replicas: "\((.Spec.Mode.Replicated.Replicas // 1))/\((.Spec.Mode.Replicated.Replicas // 1))",
+    image: (.Spec.TaskTemplate.ContainerSpec.Image | split("@")[0]),
+    networks: [.Spec.TaskTemplate.Networks // [] | .[] | . as $target | $net[0][] | select(.Id == $target.Target).Name],
+    runningOn: (.Spec.Name as $svc | [$tasks[0][] | select(.Name | startswith($svc + ".")) | .Node] | unique),
+    ports: [.Endpoint.Ports // [] | .[] | "\(.PublishedPort):\(.TargetPort)/\(.Protocol)"],
+    mounts: [.Spec.TaskTemplate.ContainerSpec.Mounts // [] | .[] | "\(.Source):\(.Target)"],
+    constraints: [.Spec.TaskTemplate.Placement.Constraints // [] | .[]],
+    labels: (.Spec.Labels // {})
+  })
+}
+' | jq -c
+```
+
+**Prerequisites:**
+- Docker Swarm must be initialized and running
+- `jq` must be installed
+- You must be on a swarm manager
+
+**Usage:**
+Copy the generated JSON output and paste it into the visualizer's input field.
+
 ## Features
 
 - **Live visualization** - Interactive D3.js force-directed graph
