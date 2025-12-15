@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker Swarm Visualizer</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <style>
+        :root {
+            --terminal-green: #00ff41;
+            --terminal-blue: #00d4ff;
+            --terminal-orange: #ff9500;
+            --terminal-red: #ff0055;
+            --terminal-purple: #bf5af2;
+            --bg-dark: #0a0e14;
+            --bg-card: #14181f;
+            --border-color: #1f2937;
+            --text-primary: #e0e6ed;
+            --text-secondary: #8b95a8;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 255, 65, 0.02) 2px, rgba(0, 255, 65, 0.02) 4px);
+            pointer-events: none;
+            z-index: 1;
+        }
+        .container { position: relative; z-index: 2; height: 100vh; display: flex; flex-direction: column; }
+        header {
+            background: var(--bg-card);
+            border-bottom: 2px solid var(--terminal-green);
+            padding: 1.5rem 2rem;
+            box-shadow: 0 4px 20px rgba(0, 255, 65, 0.1);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        header::after {
+            content: '';
+            position: absolute;
+            bottom: -2px; left: 0;
+            width: 100%; height: 2px;
+            background: linear-gradient(90deg, var(--terminal-green) 0%, var(--terminal-blue) 50%, var(--terminal-orange) 100%);
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        .header-left { display: flex; align-items: center; }
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--terminal-green), var(--terminal-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-transform: uppercase;
+            display: inline-block;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--terminal-green);
+            margin-left: 1rem;
+            animation: blink 2s infinite;
+            box-shadow: 0 0 10px var(--terminal-green);
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .main-content { display: flex; flex: 1; overflow: hidden; }
+        .sidebar {
+            width: 350px;
+            background: var(--bg-card);
+            border-right: 1px solid var(--border-color);
+            padding: 1.5rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        .control-panel {
+            background: linear-gradient(135deg, rgba(0, 255, 65, 0.05), rgba(0, 212, 255, 0.05));
+            border: 1px solid var(--border-color);
+            border-left: 3px solid var(--terminal-green);
+            padding: 1.25rem;
+            border-radius: 4px;
+        }
+        .control-panel h3 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--terminal-green);
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        .input-group { margin-bottom: 1rem; }
+        label {
+            display: block;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+        input, textarea {
+            width: 100%;
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            border-radius: 3px;
+            transition: all 0.3s ease;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: var(--terminal-green);
+            box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.1);
+        }
+        textarea { resize: vertical; min-height: 120px; font-size: 0.75rem; }
+        button {
+            width: 100%;
+            background: linear-gradient(135deg, var(--terminal-green), var(--terminal-blue));
+            color: var(--bg-dark);
+            border: none;
+            padding: 0.9rem 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        button:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0, 255, 65, 0.3); }
+        button:active { transform: translateY(0); }
+        .legend {
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            border-radius: 4px;
+        }
+        .legend h3 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.8rem;
+        }
+        .legend-circle { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+        .legend-line { width: 30px; height: 2px; flex-shrink: 0; }
+        .visualization { flex: 1; position: relative; overflow: hidden; }
+        #network-graph {
+            width: 100%; height: 100%;
+            background: radial-gradient(circle at 50% 50%, rgba(0, 255, 65, 0.03), transparent 70%);
+        }
+        .node { cursor: pointer; transition: all 0.3s ease; }
+        .node:hover { filter: brightness(1.5); }
+        .node.highlighted { filter: brightness(1.5) drop-shadow(0 0 10px currentColor); }
+        .node.dimmed { opacity: 0.2; }
+        .node-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            fill: var(--text-primary);
+            pointer-events: none;
+            text-anchor: middle;
+            font-weight: 600;
+        }
+        .node-label.dimmed { opacity: 0.2; }
+        .link { stroke-opacity: 0.6; transition: all 0.3s ease; }
+        .link:hover { stroke-opacity: 1; stroke-width: 3; }
+        .link.dimmed { opacity: 0.1; }
+        .tooltip {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--terminal-green);
+            padding: 1rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            pointer-events: auto;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+            box-shadow: 0 4px 20px rgba(0, 255, 65, 0.2);
+            width: 350px;
+            max-height: 400px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        .tooltip.visible { opacity: 1; visibility: visible; }
+        .tooltip-title {
+            font-weight: 700;
+            color: var(--terminal-green);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .tooltip-content { color: var(--text-secondary); line-height: 1.6; }
+        .tooltip-section { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color); }
+        .tooltip-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+        .tooltip-label { color: var(--terminal-blue); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; }
+        .tooltip-value { color: var(--text-primary); word-break: break-all; }
+        .tooltip-tag {
+            display: inline-block;
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            margin: 2px;
+        }
+        .tooltip-tag.mode-global { border-color: var(--terminal-purple); color: var(--terminal-purple); }
+        .tooltip-tag.mode-replicated { border-color: var(--terminal-blue); color: var(--terminal-blue); }
+        .tooltip-hidden { display: none; margin-top: 8px; }
+        .tooltip-hidden.expanded { display: block; }
+        .tooltip-expand {
+            color: var(--terminal-green);
+            cursor: pointer;
+            font-size: 0.7rem;
+            margin-top: 4px;
+            display: inline-block;
+            user-select: none;
+        }
+        .tooltip-expand:hover { text-decoration: underline; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem; }
+        .stat-card {
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-value { font-size: 1.8rem; font-weight: 800; color: var(--terminal-green); margin-bottom: 0.25rem; }
+        .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); }
+        .error-message {
+            background: rgba(255, 0, 85, 0.1);
+            border: 1px solid var(--terminal-red);
+            border-left: 3px solid var(--terminal-red);
+            padding: 1rem;
+            border-radius: 4px;
+            color: var(--terminal-red);
+            font-size: 0.85rem;
+            margin-top: 1rem;
+            display: none;
+        }
+        .error-message.visible { display: block; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--terminal-green); }
+        .zoom-controls {
+            position: absolute;
+            bottom: 20px; right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 100;
+        }
+        .zoom-btn {
+            width: 40px; height: 40px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            border-radius: 4px;
+            background: var(--bg-card);
+            border: 1px solid var(--terminal-green);
+            color: var(--terminal-green);
+        }
+        .zoom-btn:hover {
+            background: var(--terminal-green);
+            color: var(--bg-dark);
+            transform: scale(1.1);
+            box-shadow: 0 0 15px rgba(0, 255, 65, 0.4);
+        }
+        .zoom-level {
+            font-size: 0.7rem;
+            text-align: center;
+            color: var(--text-secondary);
+            background: var(--bg-card);
+            padding: 4px 8px;
+            border-radius: 3px;
+            border: 1px solid var(--border-color);
+        }
+        .search-container { position: relative; }
+        .search-input {
+            width: 100%;
+            background: var(--bg-dark);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.75rem 0.75rem 0.75rem 2.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            border-radius: 3px;
+        }
+        .search-icon {
+            position: absolute;
+            left: 0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            pointer-events: none;
+        }
+        .search-clear {
+            position: absolute;
+            right: 0.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 4px;
+            width: auto;
+            font-size: 1rem;
+            display: none;
+        }
+        .search-clear:hover { color: var(--terminal-red); }
+        .search-clear.visible { display: block; }
+        .autocomplete-dropdown {
+            position: absolute;
+            top: 100%; left: 0; right: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--terminal-green);
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+        .autocomplete-dropdown.visible { display: block; }
+        .autocomplete-item {
+            padding: 0.75rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+            transition: background 0.2s ease;
+        }
+        .autocomplete-item:last-child { border-bottom: none; }
+        .autocomplete-item:hover, .autocomplete-item.selected { background: rgba(0, 255, 65, 0.1); }
+        .autocomplete-type { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+        .autocomplete-type.node { background: var(--terminal-green); }
+        .autocomplete-type.network { background: var(--terminal-red); }
+        .autocomplete-type.service { background: var(--terminal-orange); }
+        .autocomplete-label { flex: 1; font-size: 0.85rem; }
+        .autocomplete-category { font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; }
+        .highlight-match { color: var(--terminal-green); font-weight: 700; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1>⚡ Docker Swarm Visualizer</h1>
+                <span class="status-indicator"></span>
+            </div>
+        </header>
+        <div class="main-content">
+            <aside class="sidebar">
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="node-count">0</div>
+                        <div class="stat-label">Nodes</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="network-count">0</div>
+                        <div class="stat-label">Networks</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="service-count">0</div>
+                        <div class="stat-label">Services</div>
+                    </div>
+                </div>
+                <div class="control-panel">
+                    <h3>🔍 Search</h3>
+                    <div class="search-container">
+                        <span class="search-icon">⌕</span>
+                        <input type="text" id="search-input" class="search-input" placeholder="Search nodes, services, networks..." autocomplete="off">
+                        <button class="search-clear" id="search-clear">✕</button>
+                        <div class="autocomplete-dropdown" id="autocomplete-dropdown"></div>
+                    </div>
+                </div>
+                <div class="control-panel">
+                    <h3>📊 JSON Data</h3>
+                    <div class="input-group">
+                        <label for="json-input">Paste JSON Data</label>
+                        <textarea id="json-input" placeholder='{"nodes": [...], "networks": [...], "services": [...]}'></textarea>
+                    </div>
+                    <button id="load-json">Load Data</button>
+                    <div class="error-message" id="error-message"></div>
+                </div>
+                <div class="legend">
+                    <h3>Legend</h3>
+                    <div class="legend-item"><div class="legend-circle" style="background: var(--terminal-green);"></div><span>Manager Node</span></div>
+                    <div class="legend-item"><div class="legend-circle" style="background: var(--terminal-blue);"></div><span>Worker Node</span></div>
+                    <div class="legend-item"><div class="legend-circle" style="background: var(--terminal-orange);"></div><span>Service</span></div>
+                    <div class="legend-item"><div class="legend-circle" style="background: var(--terminal-red);"></div><span>Overlay Network</span></div>
+                    <div class="legend-item"><div class="legend-line" style="background: var(--terminal-orange);"></div><span>Service → Node</span></div>
+                    <div class="legend-item"><div class="legend-line" style="background: var(--terminal-green);"></div><span>Service → Network</span></div>
+                </div>
+            </aside>
+            <main class="visualization">
+                <svg id="network-graph"></svg>
+                <div class="tooltip" id="tooltip">
+                    <div class="tooltip-title" id="tooltip-title"></div>
+                    <div class="tooltip-content" id="tooltip-content"></div>
+                </div>
+                <div class="zoom-controls">
+                    <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
+                    <div class="zoom-level" id="zoom-level">100%</div>
+                    <button class="zoom-btn" id="zoom-out" title="Zoom Out">−</button>
+                    <button class="zoom-btn" id="zoom-reset" title="Reset View" style="font-size: 1rem;">⟲</button>
+                </div>
+            </main>
+        </div>
+    </div>
+    <script>
+        // Example data - replace with your swarm export
+        const exampleData = {
+            "nodes": [
+                {"id": "manager1", "hostname": "swarm-manager-01", "role": "Leader", "status": "Ready", "availability": "Active"},
+                {"id": "worker1", "hostname": "swarm-worker-01", "role": "worker", "status": "Ready", "availability": "Active"}
+            ],
+            "networks": [
+                {"id": "net1", "name": "ingress", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.0.0/24", "Gateway": "10.0.0.1"}]}},
+                {"id": "net2", "name": "backend", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.1.0/24", "Gateway": "10.0.1.1"}]}}
+            ],
+            "services": [
+                {"id": "svc1", "name": "web", "replicas": "3/3", "mode": "Replicated", "image": "nginx:latest", "networks": ["ingress"], "runningOn": ["swarm-manager-01", "swarm-worker-01"], "ports": ["80:80", "443:443"]},
+                {"id": "svc2", "name": "api", "replicas": "2/2", "mode": "Replicated", "image": "node:18", "networks": ["backend"], "runningOn": ["swarm-worker-01"], "ports": ["3000:3000"], "mounts": ["/data:/app/data"]}
+            ]
+        };
+
+        const width = window.innerWidth - 350;
+        const height = window.innerHeight - 100;
+        const svg = d3.select('#network-graph').attr('width', width).attr('height', height);
+        const g = svg.append('g');
+        let currentZoom = 1;
+
+        const zoom = d3.zoom()
+            .scaleExtent([0.05, 5])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+                currentZoom = event.transform.k;
+                document.getElementById('zoom-level').textContent = Math.round(currentZoom * 100) + '%';
+            });
+        svg.call(zoom);
+
+        document.getElementById('zoom-in').addEventListener('click', () => svg.transition().duration(300).call(zoom.scaleBy, 1.3));
+        document.getElementById('zoom-out').addEventListener('click', () => svg.transition().duration(300).call(zoom.scaleBy, 0.7));
+        document.getElementById('zoom-reset').addEventListener('click', () => svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity));
+
+        let simulation = d3.forceSimulation()
+            .force('link', d3.forceLink().id(d => d.id).distance(150))
+            .force('charge', d3.forceManyBody().strength(-800))
+            .force('center', d3.forceCenter(width / 2, height / 2))
+            .force('collision', d3.forceCollide().radius(50));
+
+        let nodes = [], links = [];
+        let linkElements, nodeElements, textElements;
+        const tooltip = d3.select('#tooltip');
+
+        function displayTooltipContent(d) {
+            document.getElementById('tooltip-title').textContent = d.label;
+            let content = '';
+            if (d.type === 'node') {
+                content = `
+                    <div class="tooltip-section"><div class="tooltip-label">Role</div><div class="tooltip-value">${d.role === 'manager' || d.role === 'Leader' || d.role === 'Reachable' ? '👑 Manager' : '⚙️ Worker'}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Status</div><div class="tooltip-value">${d.status || 'Active'} / ${d.availability || 'Active'}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">ID</div><div class="tooltip-value" style="font-size: 0.7rem;">${d.id}</div></div>`;
+            } else if (d.type === 'network') {
+                content = `
+                    <div class="tooltip-section"><div class="tooltip-label">Type</div><div class="tooltip-value">🌐 Overlay Network</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Driver</div><div class="tooltip-value">${d.driver || 'overlay'}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Scope</div><div class="tooltip-value">${d.scope || 'swarm'}</div></div>
+                    ${d.subnet ? `<div class="tooltip-section"><div class="tooltip-label">Subnet</div><div class="tooltip-value">${d.subnet}</div></div>` : ''}
+                    ${d.gateway ? `<div class="tooltip-section"><div class="tooltip-label">Gateway</div><div class="tooltip-value">${d.gateway}</div></div>` : ''}`;
+            } else if (d.type === 'service') {
+                const modeClass = d.mode === 'Global' ? 'mode-global' : 'mode-replicated';
+                const modeIcon = d.mode === 'Global' ? '🌍' : '📦';
+                
+                let networksHtml = 'N/A';
+                if (d.networks && d.networks.length > 0) {
+                    const visible = d.networks.slice(0, 3).map(n => '<span class="tooltip-tag">'+n+'</span>').join('');
+                    if (d.networks.length > 3) {
+                        const hidden = d.networks.slice(3).map(n => '<span class="tooltip-tag">'+n+'</span>').join('');
+                        networksHtml = visible + '<span class="tooltip-expand" data-target="networks">▼ +' + (d.networks.length - 3) + ' more</span><div class="tooltip-hidden" id="networks-hidden">' + hidden + '</div>';
+                    } else {
+                        networksHtml = visible;
+                    }
+                }
+                
+                let mountsHtml = '';
+                if (d.mounts && d.mounts.length > 0) {
+                    const visible = d.mounts.slice(0, 2).map(m => '<div>📁 '+m+'</div>').join('');
+                    if (d.mounts.length > 2) {
+                        const hidden = d.mounts.slice(2).map(m => '<div>📁 '+m+'</div>').join('');
+                        mountsHtml = `<div class="tooltip-section"><div class="tooltip-label">Mounts (${d.mounts.length})</div><div class="tooltip-value" style="font-size: 0.65rem;">${visible}<span class="tooltip-expand" data-target="mounts">▼ +${d.mounts.length - 2} more</span><div class="tooltip-hidden" id="mounts-hidden">${hidden}</div></div></div>`;
+                    } else {
+                        mountsHtml = `<div class="tooltip-section"><div class="tooltip-label">Mounts</div><div class="tooltip-value" style="font-size: 0.65rem;">${visible}</div></div>`;
+                    }
+                }
+                
+                let labelsHtml = '';
+                if (d.labels && Object.keys(d.labels).length > 0) {
+                    const entries = Object.entries(d.labels);
+                    const visible = entries.slice(0, 3).map(([k, v]) => '<div>'+k+'</div>').join('');
+                    if (entries.length > 3) {
+                        const hidden = entries.slice(3).map(([k, v]) => '<div>'+k+'</div>').join('');
+                        labelsHtml = `<div class="tooltip-section"><div class="tooltip-label">Labels (${entries.length})</div><div class="tooltip-value" style="font-size: 0.65rem;">${visible}<span class="tooltip-expand" data-target="labels">▼ +${entries.length - 3} more</span><div class="tooltip-hidden" id="labels-hidden">${hidden}</div></div></div>`;
+                    } else {
+                        labelsHtml = `<div class="tooltip-section"><div class="tooltip-label">Labels (${entries.length})</div><div class="tooltip-value" style="font-size: 0.65rem;">${visible}</div></div>`;
+                    }
+                }
+                
+                content = `
+                    <div class="tooltip-section"><div class="tooltip-label">Mode</div><div class="tooltip-value">${modeIcon} <span class="tooltip-tag ${modeClass}">${d.mode || 'Replicated'}</span></div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Replicas</div><div class="tooltip-value">${d.replicas || 'N/A'}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Image</div><div class="tooltip-value" style="font-size: 0.7rem;">🐳 ${d.image || 'N/A'}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Networks (${d.networks ? d.networks.length : 0})</div><div class="tooltip-value">${networksHtml}</div></div>
+                    <div class="tooltip-section"><div class="tooltip-label">Running on</div><div class="tooltip-value">${d.runningOn && d.runningOn.length > 0 ? d.runningOn.map(n => '<span class="tooltip-tag">'+n+'</span>').join('') : 'N/A'}</div></div>
+                    ${d.ports && d.ports.length > 0 ? `<div class="tooltip-section"><div class="tooltip-label">Ports</div><div class="tooltip-value">${d.ports.map(p => '<span class="tooltip-tag">'+p+'</span>').join('')}</div></div>` : ''}
+                    ${mountsHtml}
+                    ${d.constraints && d.constraints.length > 0 ? `<div class="tooltip-section"><div class="tooltip-label">Constraints</div><div class="tooltip-value">${d.constraints.map(c => '<span class="tooltip-tag">'+c+'</span>').join('')}</div></div>` : ''}
+                    ${labelsHtml}`;
+            }
+            document.getElementById('tooltip-content').innerHTML = content;
+        }
+
+        function showTooltip(event, d) {
+            displayTooltipContent(d);
+            tooltip.classed('visible', true);
+        }
+
+        function hideTooltip() {
+            tooltip.classed('visible', false);
+        }
+
+        function onNodeClick(event, d) {
+            event.stopPropagation();
+            displayTooltipContent(d);
+            tooltip.classed('visible', true);
+        }
+
+        svg.on('click', (event) => {
+            if (event.target === svg.node()) {
+                hideTooltip();
+            }
+        });
+        
+        document.querySelector('.sidebar').addEventListener('click', (event) => {
+            if (!event.target.closest('#tooltip')) {
+                hideTooltip();
+            }
+        });
+
+        document.getElementById('tooltip').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (e.target.classList.contains('tooltip-expand')) {
+                const hiddenEl = e.target.nextElementSibling;
+                if (hiddenEl && hiddenEl.classList.contains('tooltip-hidden')) {
+                    hiddenEl.classList.toggle('expanded');
+                    const isExpanded = hiddenEl.classList.contains('expanded');
+                    const count = e.target.textContent.match(/\d+/)?.[0] || '';
+                    e.target.textContent = isExpanded ? '▲ See less' : '▼ +' + count + ' more';
+                }
+            }
+        });
+
+        function updateVisualization(data) {
+            g.selectAll('*').remove();
+            nodes = []; links = [];
+
+            if (data.nodes) {
+                data.nodes.forEach(node => {
+                    nodes.push({ id: node.id, label: node.hostname || node.id.substring(0, 12), hostname: node.hostname, type: 'node', role: node.role || 'worker', status: node.status, availability: node.availability });
+                });
+            }
+
+            if (data.networks) {
+                data.networks.forEach(network => {
+                    const ipamConfig = network.ipam?.Config?.[0] || {};
+                    nodes.push({ id: network.id, label: network.name, type: 'network', driver: network.driver, scope: network.scope, subnet: ipamConfig.Subnet, gateway: ipamConfig.Gateway });
+                });
+            }
+
+            if (data.services) {
+                data.services.forEach(service => {
+                    const serviceNetworks = service.networks || (service.network ? [service.network] : []);
+                    nodes.push({
+                        id: service.id, label: service.name, type: 'service', replicas: service.replicas, mode: service.mode, image: service.image,
+                        networks: serviceNetworks, runningOn: service.runningOn || [], ports: service.ports || [], mounts: service.mounts || [],
+                        constraints: service.constraints || [], labels: service.labels || {}
+                    });
+
+                    serviceNetworks.forEach(networkName => {
+                        const networkNode = nodes.find(n => n.type === 'network' && (n.label === networkName || n.id === networkName));
+                        if (networkNode) links.push({ source: service.id, target: networkNode.id, type: 'service-network' });
+                    });
+
+                    if (service.runningOn && service.runningOn.length > 0) {
+                        service.runningOn.forEach(nodeRef => {
+                            const targetNode = nodes.find(n => n.type === 'node' && (n.id === nodeRef || n.label === nodeRef || n.hostname === nodeRef));
+                            if (targetNode) links.push({ source: service.id, target: targetNode.id, type: 'service-node' });
+                        });
+                    }
+                });
+            }
+
+            document.getElementById('node-count').textContent = nodes.filter(n => n.type === 'node').length;
+            document.getElementById('network-count').textContent = nodes.filter(n => n.type === 'network').length;
+            document.getElementById('service-count').textContent = nodes.filter(n => n.type === 'service').length;
+
+            linkElements = g.append('g').selectAll('line').data(links).enter().append('line')
+                .attr('class', 'link')
+                .attr('stroke', d => d.type === 'service-node' ? 'var(--terminal-orange)' : 'var(--terminal-green)')
+                .attr('stroke-width', 2)
+                .attr('stroke-dasharray', d => d.type === 'service-node' ? '5,5' : 'none');
+
+            nodeElements = g.append('g').selectAll('circle').data(nodes).enter().append('circle')
+                .attr('class', 'node')
+                .attr('r', d => d.type === 'network' ? 25 : d.type === 'service' ? 20 : 30)
+                .attr('fill', d => {
+                    if (d.type === 'node') return (d.role === 'manager' || d.role === 'Leader' || d.role === 'Reachable') ? 'var(--terminal-green)' : 'var(--terminal-blue)';
+                    if (d.type === 'network') return 'var(--terminal-red)';
+                    return 'var(--terminal-orange)';
+                })
+                .attr('stroke', 'var(--bg-dark)').attr('stroke-width', 3)
+                .on('mouseover', showTooltip)
+                .on('click', onNodeClick)
+                .call(d3.drag().on('start', dragstarted).on('drag', dragged).on('end', dragended));
+
+            textElements = g.append('g').selectAll('text').data(nodes).enter().append('text')
+                .attr('class', 'node-label')
+                .attr('dy', d => d.type === 'network' ? 40 : d.type === 'service' ? 35 : 45)
+                .text(d => d.label);
+
+            simulation.nodes(nodes).on('tick', ticked);
+            simulation.force('link').links(links);
+            simulation.alpha(1).restart();
+            updateSearchData();
+        }
+
+        function ticked() {
+            linkElements.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+            nodeElements.attr('cx', d => d.x).attr('cy', d => d.y);
+            textElements.attr('x', d => d.x).attr('y', d => d.y);
+        }
+
+        function dragstarted(event, d) { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }
+        function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
+        function dragended(event, d) { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error-message');
+            errorEl.textContent = message;
+            errorEl.classList.add('visible');
+            setTimeout(() => errorEl.classList.remove('visible'), 5000);
+        }
+
+        document.getElementById('load-json').addEventListener('click', () => {
+            try {
+                const data = JSON.parse(document.getElementById('json-input').value);
+                updateVisualization(data);
+            } catch (error) { showError('JSON Error: ' + error.message); }
+        });
+
+        // Search functionality
+        const searchInput = document.getElementById('search-input');
+        const searchClear = document.getElementById('search-clear');
+        const autocompleteDropdown = document.getElementById('autocomplete-dropdown');
+        let searchData = [], selectedIndex = -1;
+
+        function updateSearchData() {
+            searchData = nodes.map(n => ({ id: n.id, label: n.label, type: n.type, data: n }));
+        }
+
+        function highlightText(text, query) {
+            if (!query) return text;
+            const regex = new RegExp('(' + query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+            return text.replace(regex, '<span class="highlight-match">$1</span>');
+        }
+
+        function filterSearch(query) {
+            if (!query) return [];
+            const lowerQuery = query.toLowerCase();
+            return searchData.filter(item => item.label.toLowerCase().includes(lowerQuery) || item.id.toLowerCase().includes(lowerQuery)).slice(0, 10);
+        }
+
+        function renderAutocomplete(results, query) {
+            if (results.length === 0) { autocompleteDropdown.classList.remove('visible'); return; }
+            autocompleteDropdown.innerHTML = results.map((item, index) => 
+                '<div class="autocomplete-item ' + (index === selectedIndex ? 'selected' : '') + '" data-index="' + index + '">' +
+                '<div class="autocomplete-type ' + item.type + '"></div>' +
+                '<div class="autocomplete-label">' + highlightText(item.label, query) + '</div>' +
+                '<div class="autocomplete-category">' + item.type + '</div></div>'
+            ).join('');
+            autocompleteDropdown.classList.add('visible');
+            autocompleteDropdown.querySelectorAll('.autocomplete-item').forEach(item => {
+                item.addEventListener('click', () => selectSearchResult(results[parseInt(item.dataset.index)]));
+            });
+        }
+
+        function selectSearchResult(result) {
+            searchInput.value = result.label;
+            autocompleteDropdown.classList.remove('visible');
+            searchClear.classList.add('visible');
+            highlightNode(result.id);
+            centerOnNode(result.data);
+        }
+
+        function highlightNode(nodeId) {
+            nodeElements.classed('highlighted', false).classed('dimmed', false);
+            textElements.classed('dimmed', false);
+            linkElements.classed('dimmed', false);
+            const connectedNodeIds = new Set([nodeId]);
+            links.forEach(link => {
+                const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
+                const targetId = typeof link.target === 'object' ? link.target.id : link.target;
+                if (sourceId === nodeId) connectedNodeIds.add(targetId);
+                if (targetId === nodeId) connectedNodeIds.add(sourceId);
+            });
+            nodeElements.classed('highlighted', d => d.id === nodeId).classed('dimmed', d => !connectedNodeIds.has(d.id));
+            textElements.classed('dimmed', d => !connectedNodeIds.has(d.id));
+            linkElements.classed('dimmed', d => {
+                const sourceId = typeof d.source === 'object' ? d.source.id : d.source;
+                const targetId = typeof d.target === 'object' ? d.target.id : d.target;
+                return sourceId !== nodeId && targetId !== nodeId;
+            });
+        }
+
+        function centerOnNode(node) {
+            if (!node.x || !node.y) return;
+            const scale = 1.5;
+            svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(width / 2 - node.x * scale, height / 2 - node.y * scale).scale(scale));
+        }
+
+        function clearSearch() {
+            searchInput.value = '';
+            searchClear.classList.remove('visible');
+            autocompleteDropdown.classList.remove('visible');
+            selectedIndex = -1;
+            nodeElements.classed('highlighted', false).classed('dimmed', false);
+            textElements.classed('dimmed', false);
+            linkElements.classed('dimmed', false);
+        }
+
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            selectedIndex = -1;
+            if (query) { searchClear.classList.add('visible'); renderAutocomplete(filterSearch(query), query); }
+            else clearSearch();
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            const results = filterSearch(searchInput.value.trim());
+            if (e.key === 'ArrowDown') { e.preventDefault(); selectedIndex = Math.min(selectedIndex + 1, results.length - 1); renderAutocomplete(results, searchInput.value.trim()); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); selectedIndex = Math.max(selectedIndex - 1, -1); renderAutocomplete(results, searchInput.value.trim()); }
+            else if (e.key === 'Enter' && selectedIndex >= 0) { e.preventDefault(); selectSearchResult(results[selectedIndex]); }
+            else if (e.key === 'Escape') clearSearch();
+        });
+
+        searchInput.addEventListener('focus', () => { const query = searchInput.value.trim(); if (query) renderAutocomplete(filterSearch(query), query); });
+        searchClear.addEventListener('click', clearSearch);
+        document.addEventListener('click', (e) => { if (!e.target.closest('.search-container')) autocompleteDropdown.classList.remove('visible'); });
+
+        // Load example data on start
+        updateVisualization(exampleData);
+
+        window.addEventListener('resize', () => {
+            const newWidth = window.innerWidth - 350, newHeight = window.innerHeight - 100;
+            svg.attr('width', newWidth).attr('height', newHeight);
+            simulation.force('center', d3.forceCenter(newWidth / 2, newHeight / 2));
+            simulation.alpha(0.3).restart();
+        });
+    </script>
+</body>
+</html>
