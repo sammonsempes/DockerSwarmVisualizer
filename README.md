@@ -70,7 +70,7 @@ Copy the generated JSON output and paste it into the visualizer's input field.
 ## Quick Start
 
 ```bash
-git clone https://github.com/DockerSwarmVisualizer/DockerSwarmVisualizer.git
+git clone https://github.com/sammonsempes/DockerSwarmVisualizer.git
 cd DockerSwarmVisualizer
 docker stack deploy -c docker-compose.yml visualizer
 ```
