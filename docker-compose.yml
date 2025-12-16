@@ -1,6 +1,6 @@
 services:
   visualizer:
-    image: DockerSwarmVisualizer/DockerSwarmVisualizer:latest
+    image: dockerswarmvisualizer/dockerswarmvisualizer:latest
     ports:
       - "5000:5000"
     volumes:

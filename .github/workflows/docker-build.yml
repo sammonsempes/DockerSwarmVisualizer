@@ -37,4 +37,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: DockerSwarmVisualizer/DockerSwarmVisualizer:${{ steps.docker_tag.outputs.tag }}
+          tags: dockerswarmvisualizer/dockerswarmvisualizer:${{ steps.docker_tag.outputs.tag }}
