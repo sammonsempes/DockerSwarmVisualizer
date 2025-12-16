@@ -1,4 +1,150 @@
-<!DOCTYPE html>
+#!/usr/bin/env python3
+"""
+Docker Swarm Visualizer - Flask Application
+Serves the visualization HTML with live swarm data if available.
+"""
+
+import subprocess
+import json
+import os
+from flask import Flask, render_template_string, jsonify
+
+app = Flask(__name__)
+
+# Default example data (used when no swarm is available)
+DEFAULT_DATA = {
+    "nodes": [
+        {"id": "manager1", "hostname": "swarm-manager-01", "role": "Leader", "status": "Ready", "availability": "Active"},
+        {"id": "worker1", "hostname": "swarm-worker-01", "role": "worker", "status": "Ready", "availability": "Active"}
+    ],
+    "networks": [
+        {"id": "net1", "name": "ingress", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.0.0/24", "Gateway": "10.0.0.1"}]}},
+        {"id": "net2", "name": "backend", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.1.0/24", "Gateway": "10.0.1.1"}]}}
+    ],
+    "services": [
+        {"id": "svc1", "name": "web", "replicas": "3/3", "mode": "Replicated", "image": "nginx:latest", "networks": ["ingress"], "runningOn": ["swarm-manager-01", "swarm-worker-01"], "ports": ["80:80", "443:443"]},
+        {"id": "svc2", "name": "api", "replicas": "2/2", "mode": "Replicated", "image": "node:18", "networks": ["backend"], "runningOn": ["swarm-worker-01"], "ports": ["3000:3000"], "mounts": ["/data:/app/data"]}
+    ]
+}
+
+EXPORT_SCRIPT = r'''
+jq -n \
+  --slurpfile n <(docker node ls --format '{{json .}}' | jq -s .) \
+  --slurpfile net <(docker network ls --filter scope=swarm -q | xargs -r docker network inspect) \
+  --slurpfile s <(docker service ls -q | xargs -r docker service inspect | jq -s 'flatten') \
+  --slurpfile tasks <(docker service ls -q | xargs -r -I {} docker service ps {} --format '{{json .}}' -f "desired-state=running" | jq -s .) \
+'
+{
+  nodes: $n[0] | map({
+    id: .ID,
+    hostname: .Hostname,
+    status: .Status,
+    availability: .Availability,
+    role: (.ManagerStatus // "worker")
+  }),
+  networks: $net[0] | map({
+    id: .Name,
+    name: .Name,
+    driver: .Driver,
+    scope: .Scope,
+    created: .Created,
+    ipam: .IPAM
+  }),
+  services: $s[0] | map({
+    id: .Spec.Name,
+    name: .Spec.Name,
+    mode: (.Spec.Mode | keys[0]),
+    replicas: "\((.Spec.Mode.Replicated.Replicas // 1))/\((.Spec.Mode.Replicated.Replicas // 1))",
+    image: (.Spec.TaskTemplate.ContainerSpec.Image | split("@")[0]),
+    networks: [.Spec.TaskTemplate.Networks // [] | .[] | . as $target | $net[0][] | select(.Id == $target.Target).Name],
+    runningOn: (.Spec.Name as $svc | [$tasks[0][] | select(.Name | startswith($svc + ".")) | .Node] | unique),
+    ports: [.Endpoint.Ports // [] | .[] | "\(.PublishedPort):\(.TargetPort)/\(.Protocol)"],
+    mounts: [.Spec.TaskTemplate.ContainerSpec.Mounts // [] | .[] | "\(.Source):\(.Target)"],
+    constraints: [.Spec.TaskTemplate.Placement.Constraints // [] | .[]],
+    labels: (.Spec.Labels // {})
+  })
+}
+'
+'''
+
+
+def get_swarm_data():
+    """
+    Execute the export script and return swarm data.
+    Returns DEFAULT_DATA if Docker/Swarm is not available.
+    """
+    try:
+        # First check if docker is available and we're in swarm mode
+        check_result = subprocess.run(
+            ["docker", "info", "--format", "{{.Swarm.LocalNodeState}}"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if check_result.returncode != 0:
+            print(f"[ERROR] Cannot connect to Docker: {check_result.stderr.strip()}")
+            return DEFAULT_DATA, False
+        
+        swarm_state = check_result.stdout.strip()
+        if swarm_state != "active":
+            print(f"[WARNING] Docker Swarm not active (state: {swarm_state}), using demo data")
+            return DEFAULT_DATA, False
+        
+        print("[INFO] Docker Swarm detected, fetching live data...")
+        
+        # Execute the export script
+        result = subprocess.run(
+            ["bash", "-c", EXPORT_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            print(f"[ERROR] Export script failed: {result.stderr.strip()}")
+            return DEFAULT_DATA, False
+        
+        data = json.loads(result.stdout)
+        
+        if not data.get("nodes") and not data.get("services") and not data.get("networks"):
+            print("[WARNING] Swarm returned empty data, using demo data")
+            return DEFAULT_DATA, False
+        
+        node_count = len(data.get("nodes", []))
+        service_count = len(data.get("services", []))
+        network_count = len(data.get("networks", []))
+        print(f"[INFO] Loaded {node_count} nodes, {service_count} services, {network_count} networks")
+        
+        return data, True
+        
+    except subprocess.TimeoutExpired:
+        print("[ERROR] Timeout while fetching swarm data")
+        return DEFAULT_DATA, False
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Invalid JSON from export script: {e}")
+        return DEFAULT_DATA, False
+    except FileNotFoundError as e:
+        print(f"[ERROR] Command not found (docker/jq/bash missing?): {e}")
+        return DEFAULT_DATA, False
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {type(e).__name__}: {e}")
+        return DEFAULT_DATA, False
+
+def get_html_template():
+    """Load the HTML template from file or use embedded version."""
+    template_path = os.path.join(os.path.dirname(__file__), 'templates', 'index.html')
+    
+    if os.path.exists(template_path):
+        with open(template_path, 'r') as f:
+            return f.read()
+    
+    # Return embedded template if file doesn't exist
+    return HTML_TEMPLATE
+
+
+# The HTML template with placeholder for initial data
+HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -75,6 +221,43 @@
             box-shadow: 0 0 10px var(--terminal-green);
         }
         @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .data-source {
+            font-size: 0.75rem;
+            padding: 0.4rem 0.8rem;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .data-source.live {
+            background: rgba(0, 255, 65, 0.1);
+            border: 1px solid var(--terminal-green);
+            color: var(--terminal-green);
+        }
+        .data-source.demo {
+            background: rgba(255, 149, 0, 0.1);
+            border: 1px solid var(--terminal-orange);
+            color: var(--terminal-orange);
+        }
+        .refresh-btn {
+            background: transparent;
+            border: 1px solid var(--terminal-blue);
+            color: var(--terminal-blue);
+            padding: 0.4rem 0.8rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            border-radius: 3px;
+            margin-left: 0.5rem;
+            transition: all 0.3s ease;
+            width: auto;
+        }
+        .refresh-btn:hover {
+            background: var(--terminal-blue);
+            color: var(--bg-dark);
+        }
+        .refresh-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
         .main-content { display: flex; flex: 1; overflow: hidden; }
         .sidebar {
             width: 350px;
@@ -380,6 +563,12 @@
                 <h1>⚡ Docker Swarm Visualizer</h1>
                 <span class="status-indicator"></span>
             </div>
+            <div style="display: flex; align-items: center;">
+                <span id="data-source" class="data-source {{ 'live' if is_live else 'demo' }}">
+                    {{ '🟢 Live Data' if is_live else '🟠 Demo Data' }}
+                </span>
+                <button id="refresh-btn" class="refresh-btn" title="Refresh swarm data">↻ Refresh</button>
+            </div>
         </header>
         <div class="main-content">
             <aside class="sidebar">
@@ -410,7 +599,7 @@
                     <h3>📊 JSON Data</h3>
                     <div class="input-group">
                         <label for="json-input">Paste JSON Data</label>
-                        <textarea id="json-input" placeholder='{"nodes": [...], "networks": [...], "services": [...]}'></textarea>
+                        <textarea id="json-input" placeholder='{"nodes": [...], "networks": [...], "services": [...]}'>{{ initial_json }}</textarea>
                     </div>
                     <button id="load-json">Load Data</button>
                     <div class="error-message" id="error-message"></div>
@@ -441,22 +630,10 @@
         </div>
     </div>
     <script>
-        // Example data - replace with your swarm export
-        const exampleData = {
-            "nodes": [
-                {"id": "manager1", "hostname": "swarm-manager-01", "role": "Leader", "status": "Ready", "availability": "Active"},
-                {"id": "worker1", "hostname": "swarm-worker-01", "role": "worker", "status": "Ready", "availability": "Active"}
-            ],
-            "networks": [
-                {"id": "net1", "name": "ingress", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.0.0/24", "Gateway": "10.0.0.1"}]}},
-                {"id": "net2", "name": "backend", "driver": "overlay", "scope": "swarm", "ipam": {"Config": [{"Subnet": "10.0.1.0/24", "Gateway": "10.0.1.1"}]}}
-            ],
-            "services": [
-                {"id": "svc1", "name": "web", "replicas": "3/3", "mode": "Replicated", "image": "nginx:latest", "networks": ["ingress"], "runningOn": ["swarm-manager-01", "swarm-worker-01"], "ports": ["80:80", "443:443"]},
-                {"id": "svc2", "name": "api", "replicas": "2/2", "mode": "Replicated", "image": "node:18", "networks": ["backend"], "runningOn": ["swarm-worker-01"], "ports": ["3000:3000"], "mounts": ["/data:/app/data"]}
-            ]
-        };
-
+        // Initial data from server
+        const initialData = {{ initial_data | safe }};
+        const isLiveData = {{ 'true' if is_live else 'false' }};
+        
         const width = window.innerWidth - 350;
         const height = window.innerHeight - 100;
         const svg = d3.select('#network-graph').attr('width', width).attr('height', height);
@@ -691,6 +868,31 @@
             } catch (error) { showError('JSON Error: ' + error.message); }
         });
 
+        // Refresh button handler
+        document.getElementById('refresh-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('refresh-btn');
+            btn.disabled = true;
+            btn.textContent = '↻ Loading...';
+            
+            try {
+                const response = await fetch('/api/swarm');
+                const result = await response.json();
+                
+                updateVisualization(result.data);
+                document.getElementById('json-input').value = JSON.stringify(result.data, null, 2);
+                
+                const sourceEl = document.getElementById('data-source');
+                sourceEl.className = 'data-source ' + (result.is_live ? 'live' : 'demo');
+                sourceEl.textContent = result.is_live ? '🟢 Live Data' : '🟠 Demo Data';
+                
+            } catch (error) {
+                showError('Refresh failed: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '↻ Refresh';
+            }
+        });
+
         // Search functionality
         const searchInput = document.getElementById('search-input');
         const searchClear = document.getElementById('search-clear');
@@ -703,7 +905,7 @@
 
         function highlightText(text, query) {
             if (!query) return text;
-            const regex = new RegExp('(' + query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+const regex = new RegExp('(' + query.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&') + ')', 'gi');
             return text.replace(regex, '<span class="highlight-match">$1</span>');
         }
 
@@ -790,8 +992,8 @@
         searchClear.addEventListener('click', clearSearch);
         document.addEventListener('click', (e) => { if (!e.target.closest('.search-container')) autocompleteDropdown.classList.remove('visible'); });
 
-        // Load example data on start
-        updateVisualization(exampleData);
+        // Load initial data
+        updateVisualization(initialData);
 
         window.addEventListener('resize', () => {
             const newWidth = window.innerWidth - 350, newHeight = window.innerHeight - 100;
@@ -802,3 +1004,43 @@
     </script>
 </body>
 </html>
+'''
+
+
+@app.route('/')
+def index():
+    """Main visualization page."""
+    data, is_live = get_swarm_data()
+    initial_json = json.dumps(data, indent=2)
+    initial_data_js = json.dumps(data)
+    
+    return render_template_string(
+        HTML_TEMPLATE,
+        initial_data=initial_data_js,
+        initial_json=initial_json,
+        is_live=is_live
+    )
+
+
+@app.route('/api/swarm')
+def api_swarm():
+    """API endpoint to get current swarm data."""
+    data, is_live = get_swarm_data()
+    return jsonify({
+        "data": data,
+        "is_live": is_live
+    })
+
+
+if __name__ == '__main__':
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Docker Swarm Visualizer')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
+    parser.add_argument('--port', type=int, default=5000, help='Port to bind to')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    
+    args = parser.parse_args()
+    
+    print(f"Starting Docker Swarm Visualizer on http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port, debug=args.debug)

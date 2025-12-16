@@ -6,7 +6,7 @@ A real-time web visualization tool for Docker Swarm clusters. See your nodes, se
 
 A live demo is available at: https://sammonsempes.github.io/DockerSwarmVisualizer/
 
-## Generating Docker Swarm Data
+** Generating Docker Swarm Data **
 
 To generate the JSON data from your Docker Swarm cluster, run the following command:
 ```bash

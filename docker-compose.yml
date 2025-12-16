@@ -1,0 +1,19 @@
+services:
+  visualizer:
+    image: DockerSwarmVisualizer/DockerSwarmVisualizer:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:mode=1777,size=100M
+      - /var/tmp:mode=1777,size=100M
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
