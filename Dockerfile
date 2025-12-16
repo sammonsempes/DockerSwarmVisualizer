@@ -21,4 +21,4 @@ COPY app.py gunicorn.conf.py ./
 EXPOSE 5000
 
 # Production server avec Gunicorn
-CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--worker-class", "sync", "--threads", "2", "app:app"]
